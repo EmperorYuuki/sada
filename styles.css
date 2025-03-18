@@ -1592,3 +1592,57 @@
     font-size: 1.5rem;
   }
 }
+/* Verification Modal Styles */
+.glossary-issue {
+  border-left-color: var(--accent-color);
+}
+
+.glossary-issues-list .no-issues {
+  color: var(--success);
+  padding: var(--spacing-md);
+  text-align: center;
+}
+
+.verification-scores {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.score-item {
+  text-align: center;
+  padding: var(--spacing-md);
+  min-width: 120px;
+}
+
+.score-label {
+  font-weight: 500;
+  margin-bottom: var(--spacing-xs);
+  color: var(--text-secondary);
+}
+
+.score {
+  font-size: 2rem;
+  font-weight: 700;
+  transition: color 0.3s ease;
+}
+
+.score.success {
+  color: var(--success);
+}
+
+.score.info {
+  color: var(--info);
+}
+
+.score.warning {
+  color: var(--warning);
+}
+
+.score.error {
+  color: var(--error);
+}

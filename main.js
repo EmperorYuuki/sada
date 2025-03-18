@@ -164,7 +164,7 @@ function setupKeyboardShortcuts() {
 function initializeQuill() {
   if (window.Quill && !window.quill) {
     window.quill = new Quill('#translation-output', {
-      theme: 'snow',
+      theme: 'bubble',
       modules: {
         toolbar: false,
         history: {

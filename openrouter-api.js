@@ -238,50 +238,61 @@ window.OpenRouterService = {
   getRecommendedModel: function(models) {
     if (!Array.isArray(models) || models.length === 0) return null;
     
-    // Instead of hardcoded model names, evaluate based on capabilities and metadata
-    // First, sort models by a combination of factors: context length, pricing, and reliability
+    // Sort models based on context length and availability
     const sortedModels = [...models].sort((a, b) => {
-      // Filter out models without proper data
-      if (!a.pricing || !b.pricing) {
-        return 0;  // Can't compare properly, keep original order
-      }
-      
-      // Prioritize models with higher context length
+      // Prioritize models with reasonable context length (12-16K)
+      // Too small is insufficient, too large may be unnecessarily expensive
       const aContextLength = a.context_length || 0;
       const bContextLength = b.context_length || 0;
       
-      if (aContextLength !== bContextLength) {
-        return bContextLength - aContextLength; // Higher context length first
-      }
-      
-      // Compare prompt and completion pricing
-      const aPromptPrice = parseFloat(a.pricing.prompt || 0);
-      const bPromptPrice = parseFloat(b.pricing.prompt || 0);
-      const aCompletionPrice = parseFloat(a.pricing.completion || 0);
-      const bCompletionPrice = parseFloat(b.pricing.completion || 0);
-      
-      // Calculate an overall "price score" - balance quality and cost
-      // For premium models, being cheaper is better
-      // For economy models, being free might indicate limited capabilities
-      
-      // Look at provider reputation - certain providers are known for quality
-      const providerScore = (model) => {
-        const provider = model.id?.split('/')[0] || '';
-        // Higher score for known reliable providers
-        if (provider === 'anthropic' || provider === 'openai' || provider === 'google') {
-          return 2;
-        }
-        if (provider === 'mistralai' || provider === 'meta') {
-          return 1.5;
-        }
-        return 1;
+      // Ideal context range for a balance of capability and cost
+      const idealContextRange = (length) => {
+        if (length >= 12000 && length <= 32000) return 3;  // Ideal range
+        if (length >= 8000 && length < 12000) return 2;    // Good range
+        if (length > 32000) return 1;                      // Larger than needed
+        return 0;                                          // Too small
       };
       
-      const aScore = (aPromptPrice + aCompletionPrice) * (1 / providerScore(a));
-      const bScore = (bPromptPrice + bCompletionPrice) * (1 / providerScore(b));
+      const aContextScore = idealContextRange(aContextLength);
+      const bContextScore = idealContextRange(bContextLength);
       
-      // For comparable models (similar context), prefer balanced pricing
-      return aScore - bScore;
+      if (aContextScore !== bContextScore) {
+        return bContextScore - aContextScore;
+      }
+      
+      // Next prioritize by proven reliability for translation tasks
+      // Claude, GPT-4, Gemini, Mistral are good for translation
+      const getReliabilityScore = (model) => {
+        const modelId = model.id?.toLowerCase() || '';
+        
+        if (modelId.includes('claude') || 
+            modelId.includes('gpt-4') || 
+            modelId.includes('gemini') || 
+            modelId.includes('mistral-large')) {
+          return 3;  // Top tier for translation
+        }
+        
+        if (modelId.includes('gpt-3.5') || 
+            modelId.includes('mistral-medium') || 
+            modelId.includes('llama-3')) {
+          return 2;  // Good for translation
+        }
+        
+        return 1;  // Other models
+      };
+      
+      const aReliabilityScore = getReliabilityScore(a);
+      const bReliabilityScore = getReliabilityScore(b);
+      
+      if (aReliabilityScore !== bReliabilityScore) {
+        return bReliabilityScore - aReliabilityScore;
+      }
+      
+      // Finally, consider price as a factor
+      const aCost = parseFloat(a.pricing?.prompt || 0) + parseFloat(a.pricing?.completion || 0);
+      const bCost = parseFloat(b.pricing?.prompt || 0) + parseFloat(b.pricing?.completion || 0);
+      
+      return aCost - bCost;  // Lower cost preferred if all else equal
     });
     
     // Return the top recommended model
@@ -644,30 +655,25 @@ getAvailableModels: function(forceRefresh = false) {
   },
   
   /**
-   * Categorize model by its capabilities and pricing
+   * Get model category based on context length for organization purposes
    * @param {Object} model - Model data
-   * @returns {string} Category label ('premium', 'balanced', 'economy')
+   * @returns {string} Category for organization
    */
   categorizeModel: function(model) {
-    // No model data
-    if (!model || !model.pricing) return 'economy';
+    if (!model) return 'standard';
     
-    const promptPrice = parseFloat(model.pricing.prompt || '0');
-    const completionPrice = parseFloat(model.pricing.completion || '0');
     const contextLength = model.context_length || 0;
     
-    // Premium: Higher price and larger context
-    if ((promptPrice > 0.01 || completionPrice > 0.02) && contextLength >= 16000) {
-      return 'premium';
+    // Organization based solely on context window size
+    if (contextLength >= 128000) {
+      return 'very-large-context';
+    } else if (contextLength >= 32000) {
+      return 'large-context';
+    } else if (contextLength >= 16000) {
+      return 'medium-context';
+    } else {
+      return 'standard';
     }
-    
-    // Balanced: Moderate price and decent context
-    if ((promptPrice > 0.001 || completionPrice > 0.002) && contextLength >= 8000) {
-      return 'balanced';
-    }
-    
-    // Economy: Everything else
-    return 'economy';
   },
   
   /**
@@ -698,106 +704,73 @@ getAvailableModels: function(forceRefresh = false) {
     // Fetch models
     return this.getAvailableModels(forceRefresh)
       .then(models => {
-        console.log(`Received ${models.length} models, organizing for selector...`);
+        console.log(`Received ${models.length} models for selector...`);
         
         try {
-          // Group models by category and provider
-          const groupedModels = {};
+          // Clear select and add default option
+          selectElement.innerHTML = '<option value="">Select a model</option>';
           
-          // Create categories first
-          ['premium', 'balanced', 'economy'].forEach(category => {
-            groupedModels[category] = {};
-          });
+          // Group models by provider for better organization
+          const groupedByProvider = {};
           
-          // Group by category then provider
+          // Group by provider
           models.forEach(model => {
             if (!model.id) {
               console.warn('Model missing ID:', model);
               return;
             }
             
-            const category = model.category || 'economy';
             const provider = model.id.split('/')[0] || 'unknown';
             
-            if (!groupedModels[category][provider]) {
-              groupedModels[category][provider] = [];
+            if (!groupedByProvider[provider]) {
+              groupedByProvider[provider] = [];
             }
             
-            groupedModels[category][provider].push(model);
+            groupedByProvider[provider].push(model);
           });
           
-          // Clear select and add default option
-          selectElement.innerHTML = '<option value="">Select a model</option>';
+          // Sort providers alphabetically
+          const sortedProviders = Object.keys(groupedByProvider).sort();
           
-          // Add models by category then provider
-          ['premium', 'balanced', 'economy'].forEach(category => {
-            if (Object.keys(groupedModels[category]).length === 0) return;
+          // Add providers as optgroups
+          sortedProviders.forEach(provider => {
+            const providerModels = groupedByProvider[provider];
+            if (providerModels.length === 0) return;
             
-            // Create category group
-            const categoryGroup = document.createElement('optgroup');
-            categoryGroup.label = {
-              'premium': '🌟 Premium Models',
-              'balanced': '⚖️ Balanced Models',
-              'economy': '💰 Economy Models'
-            }[category];
+            // Create provider group
+            const providerGroup = document.createElement('optgroup');
+            providerGroup.label = this.getProviderDisplayName(provider);
             
-            let hasModels = false;
+            // Sort models by name within each provider
+            providerModels.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
             
-            // Add provider groups within category
-            Object.entries(groupedModels[category]).forEach(([provider, providerModels]) => {
-              if (providerModels.length === 0) return;
-              
-              hasModels = true;
-              
-              // Create provider group
-              const providerGroup = document.createElement('optgroup');
-              providerGroup.label = '    ' + this.getProviderDisplayName(provider);
-              providerGroup.style.marginLeft = '10px';
-              
-              // Add models for this provider
-              providerModels.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model.id;
-                
-                // Show pricing if available
-                let pricingInfo = '';
-                if (model.pricing) {
-                  const promptPrice = parseFloat(model.pricing.prompt || 0).toFixed(4);
-                  const completionPrice = parseFloat(model.pricing.completion || 0).toFixed(4);
-                  pricingInfo = ` ($${promptPrice}/$${completionPrice})`;
-                }
-                
-                option.textContent = `${model.name || model.id}${pricingInfo}`;
-                
-                // Add data attributes for additional info
-                option.dataset.contextLength = model.context_length || 4096;
-                if (model.pricing) {
-                  option.dataset.promptPrice = model.pricing.prompt || 0;
-                  option.dataset.completionPrice = model.pricing.completion || 0;
-                }
-                
-                providerGroup.appendChild(option);
-              });
-              
-              categoryGroup.appendChild(providerGroup);
-            });
-            
-            if (hasModels) {
-              selectElement.appendChild(categoryGroup);
-            }
-          });
-          
-          // Simple fallback if we couldn't organize by category and provider
-          if (selectElement.options.length <= 1) {
-            models.forEach(model => {
-              if (!model.id) return;
-              
+            // Add models for this provider
+            providerModels.forEach(model => {
               const option = document.createElement('option');
               option.value = model.id;
-              option.textContent = model.name || model.id;
-              selectElement.appendChild(option);
+              
+              // Show pricing if available
+              let pricingInfo = '';
+              if (model.pricing) {
+                const promptPrice = parseFloat(model.pricing.prompt || 0).toFixed(4);
+                const completionPrice = parseFloat(model.pricing.completion || 0).toFixed(4);
+                pricingInfo = ` ($${promptPrice}/$${completionPrice})`;
+              }
+              
+              option.textContent = `${model.name || model.id}${pricingInfo}`;
+              
+              // Add data attributes for additional info
+              option.dataset.contextLength = model.context_length || 4096;
+              if (model.pricing) {
+                option.dataset.promptPrice = model.pricing.prompt || 0;
+                option.dataset.completionPrice = model.pricing.completion || 0;
+              }
+              
+              providerGroup.appendChild(option);
             });
-          }
+            
+            selectElement.appendChild(providerGroup);
+          });
           
           // Restore previously selected model if any
           const currentProject = window.ProjectService?.getCurrentProject();
@@ -1582,6 +1555,93 @@ getAvailableModels: function(forceRefresh = false) {
   },
   
   /**
+   * Verify translation quality
+   * @param {string} sourceText - Original Chinese text
+   * @param {string} translatedText - English translation
+   * @param {string} model - Model ID to use for verification
+   * @returns {Promise<Object>} Verification results
+   */
+  verifyTranslation: function(sourceText, translatedText, model) {
+    if (!sourceText || !translatedText) {
+      return Promise.reject(new Error('Source and translated text are required'));
+    }
+    
+    if (!model) {
+      return Promise.reject(new Error('Model ID is required'));
+    }
+    
+    // Get current project to get glossary entries
+    const currentProject = window.ProjectService.getCurrentProject();
+    if (!currentProject) {
+      return Promise.reject(new Error('No active project found'));
+    }
+    
+    if (window.UIUtils) {
+      window.UIUtils.toggleLoading(true, 'Loading glossary and preparing verification...');
+      window.UIUtils.updateProgress(10, 'Retrieving glossary terms...');
+    }
+    
+    // First fetch the glossary entries for the current project
+    return window.GlossaryService.getGlossaryEntries(currentProject.id)
+      .then(glossaryEntries => {
+        if (window.UIUtils) {
+          window.UIUtils.updateProgress(30, `Found ${glossaryEntries.length} glossary terms to verify against...`);
+        }
+        
+        let prompt = '';
+        // Generate verification prompt with glossary terms included
+        if (window.TextUtils && typeof window.TextUtils.generateVerificationPrompt === 'function') {
+          prompt = window.TextUtils.generateVerificationPrompt(sourceText, translatedText, glossaryEntries);
+        } else {
+          // Fallback prompt generation
+          prompt = this._generateGlossaryVerificationPrompt(sourceText, translatedText, glossaryEntries);
+        }
+        
+        if (window.UIUtils) {
+          window.UIUtils.updateProgress(40, 'Analyzing translation against glossary...');
+        }
+        
+        // Request verification from OpenRouter
+        return this.generateCompletion(
+          model,
+          prompt,
+          0.2,  // Low temperature for consistent output
+          2000, // Enough tokens for detailed verification
+          false // Don't stream
+        );
+      })
+      .then(response => {
+        if (window.UIUtils) {
+          window.UIUtils.updateProgress(80, 'Processing verification results...');
+        }
+        
+        // Process the response to extract verification results
+        return this._processVerificationResponse(response);
+      })
+      .then(results => {
+        // Add glossary-specific section to results
+        return this._enhanceResultsWithGlossaryInfo(results, currentProject.id);
+      })
+      .then(enhancedResults => {
+        if (window.UIUtils) {
+          window.UIUtils.toggleLoading(false);
+        }
+        
+        // Display verification results with glossary section
+        this.displayVerificationResults(enhancedResults, sourceText, translatedText);
+        
+        return enhancedResults;
+      })
+      .catch(error => {
+        if (window.UIUtils) {
+          window.UIUtils.toggleLoading(false);
+        }
+        console.error('Translation verification error:', error);
+        throw error;
+      });
+  },
+  
+  /**
    * Display verification results in a user-friendly way
    * @param {Object} results - Verification results from OpenRouter
    * @param {string} sourceText - Original text
@@ -1594,17 +1654,34 @@ getAvailableModels: function(forceRefresh = false) {
     // Quality scores
     const accuracy = results.accuracy || 0;
     const completeness = results.completeness || 0;
-    const averageScore = Math.round((accuracy + completeness) / 2);
+    const glossaryCompliance = results.glossaryCompliance || 0;
+    
+    // Improved weighted algorithm for overall score:
+    // - If there are no glossary entries or issues, don't penalize the score for glossary compliance
+    // - Weight accuracy higher than completeness since it's more important for final quality
+    let overallScore;
+    
+    if (results.glossaryIssues && results.glossaryIssues.length === 0 && glossaryCompliance < 50) {
+      // If no glossary issues were found but compliance score is low, 
+      // it's likely the glossary is empty or not relevant, so don't count it
+      overallScore = Math.round((accuracy * 0.6) + (completeness * 0.4));
+    } else if (glossaryCompliance > 0) {
+      // Include glossary compliance with proper weighting when it's relevant
+      overallScore = Math.round((accuracy * 0.5) + (completeness * 0.3) + (glossaryCompliance * 0.2));
+    } else {
+      // No glossary configured or completely non-compliant
+      overallScore = Math.round((accuracy * 0.6) + (completeness * 0.4));
+    }
     
     // Determine overall quality level
     let qualityLevel, qualityClass;
-    if (averageScore >= 90) {
+    if (overallScore >= 90) {
       qualityLevel = 'Excellent';
       qualityClass = 'success';
-    } else if (averageScore >= 75) {
+    } else if (overallScore >= 75) {
       qualityLevel = 'Good';
       qualityClass = 'info';
-    } else if (averageScore >= 60) {
+    } else if (overallScore >= 60) {
       qualityLevel = 'Fair';
       qualityClass = 'warning';
     } else {
@@ -1632,7 +1709,34 @@ getAvailableModels: function(forceRefresh = false) {
       completenessScore.className = this.getScoreClass(completeness);
     }
     
-    // Process issues
+    // Add glossary compliance score
+    const glossaryScore = document.getElementById('glossary-score');
+    if (glossaryScore) {
+      glossaryScore.textContent = `${Math.round(glossaryCompliance)}%`;
+      glossaryScore.className = this.getScoreClass(glossaryCompliance);
+    } else {
+      // If element doesn't exist, we need to add it to the modal
+      const scoreContainer = document.querySelector('.verification-scores');
+      if (scoreContainer) {
+        const scoreItem = document.createElement('div');
+        scoreItem.className = 'score-item';
+        
+        const scoreLabel = document.createElement('div');
+        scoreLabel.className = 'score-label';
+        scoreLabel.textContent = 'Glossary Compliance';
+        
+        const scoreElement = document.createElement('div');
+        scoreElement.id = 'glossary-score';
+        scoreElement.className = this.getScoreClass(glossaryCompliance);
+        scoreElement.textContent = `${Math.round(glossaryCompliance)}%`;
+        
+        scoreItem.appendChild(scoreLabel);
+        scoreItem.appendChild(scoreElement);
+        scoreContainer.appendChild(scoreItem);
+      }
+    }
+    
+    // Process regular issues
     const issuesList = document.getElementById('verification-issues-list');
     if (issuesList) {
       issuesList.innerHTML = '';
@@ -1696,26 +1800,64 @@ getAvailableModels: function(forceRefresh = false) {
             applyBtn.addEventListener('click', function() {
               // Apply the suggestion by replacing the issue.translatedText with issue.suggestion in the Quill editor
               if (window.quill) {
-                const currentText = window.quill.getText();
-                const newText = currentText.replace(issue.translatedText, issue.suggestion);
-                window.quill.setText(newText);
-                
-                // Save the change to the project
-                const currentProject = window.ProjectService?.getCurrentProject();
-                if (currentProject) {
-                  window.ProjectService.updateProjectOutput(
-                    currentProject.id,
-                    window.quill.getContents().ops
-                  );
-                }
-                
-                // Disable the button
-                applyBtn.disabled = true;
-                applyBtn.textContent = 'Applied';
-                
-                if (window.UIUtils) {
-                  window.UIUtils.showNotification('Suggestion applied', 'success');
-                  window.UIUtils.updateLastAction('Translation updated with suggestion');
+                try {
+                  const currentText = window.quill.getText();
+                  
+                  // Find the text to replace - allow for slight differences in whitespace
+                  let textToReplace = issue.translatedText;
+                  let newText = currentText;
+                  let replaced = false;
+                  
+                  // Try exact match first
+                  if (currentText.includes(textToReplace)) {
+                    newText = currentText.replace(textToReplace, issue.suggestion);
+                    replaced = true;
+                  } else {
+                    // Try with flexible whitespace matching
+                    const escapedText = textToReplace
+                      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')  // Escape regex special chars
+                      .replace(/\s+/g, '\\s+');                // Replace whitespace with flexible whitespace matcher
+                    
+                    const regex = new RegExp(escapedText, 'g');
+                    if (regex.test(currentText)) {
+                      newText = currentText.replace(regex, issue.suggestion);
+                      replaced = true;
+                    }
+                  }
+                  
+                  if (replaced) {
+                    // Use the proper Quill API to update content
+                    window.quill.deleteText(0, currentText.length);
+                    window.quill.insertText(0, newText);
+                    
+                    // Save the change to the project
+                    const currentProject = window.ProjectService.getCurrentProject();
+                    if (currentProject) {
+                      window.ProjectService.updateProjectOutput(
+                        currentProject.id,
+                        window.quill.getContents().ops
+                      );
+                    }
+                    
+                    // Disable the button
+                    applyBtn.disabled = true;
+                    applyBtn.textContent = 'Applied';
+                    
+                    if (window.UIUtils) {
+                      window.UIUtils.showNotification('Suggestion applied', 'success');
+                      window.UIUtils.updateLastAction('Translation updated with suggestion');
+                    }
+                  } else {
+                    console.error('Could not find text to replace:', textToReplace);
+                    if (window.UIUtils) {
+                      window.UIUtils.showNotification('Could not find the exact text to replace. Try manual editing.', 'warning');
+                    }
+                  }
+                } catch (error) {
+                  console.error('Error applying suggestion:', error);
+                  if (window.UIUtils) {
+                    window.UIUtils.showNotification('Error applying suggestion: ' + error.message, 'error');
+                  }
                 }
               }
             });
@@ -1724,6 +1866,88 @@ getAvailableModels: function(forceRefresh = false) {
           
           issueItem.appendChild(issueContent);
           issuesList.appendChild(issueItem);
+        });
+      }
+    }
+    
+    // Add glossary issues section
+    let glossaryIssuesList = document.getElementById('glossary-issues-list');
+    if (!glossaryIssuesList) {
+      // Create the section if it doesn't exist
+      const modalBody = document.querySelector('#verification-results-modal .modal-body');
+      if (modalBody) {
+        const glossaryHeader = document.createElement('h4');
+        glossaryHeader.textContent = 'Glossary Compliance Issues';
+        modalBody.appendChild(glossaryHeader);
+        
+        glossaryIssuesList = document.createElement('ul');
+        glossaryIssuesList.id = 'glossary-issues-list';
+        glossaryIssuesList.className = 'glossary-issues-list';
+        modalBody.appendChild(glossaryIssuesList);
+      }
+    }
+    
+    // Populate glossary issues
+    if (glossaryIssuesList) {
+      glossaryIssuesList.innerHTML = '';
+      
+      if (!results.glossaryIssues || results.glossaryIssues.length === 0) {
+        const noIssues = document.createElement('li');
+        noIssues.className = 'no-issues';
+        noIssues.textContent = 'All glossary terms are translated correctly and consistently.';
+        glossaryIssuesList.appendChild(noIssues);
+      } else {
+        // Add glossary issues to the list
+        results.glossaryIssues.forEach(issue => {
+          const issueItem = document.createElement('li');
+          issueItem.className = 'issue-item glossary-issue';
+          
+          const issueContent = document.createElement('div');
+          issueContent.className = 'issue-content';
+          
+          // Issue description
+          const issueDesc = document.createElement('p');
+          issueDesc.className = 'issue-description';
+          issueDesc.innerHTML = `<strong>${issue.term}</strong> should be translated as <strong>${issue.expectedTranslation}</strong> but found as <strong>${issue.actualTranslation || "missing"}</strong>`;
+          issueContent.appendChild(issueDesc);
+          
+          // Add fix button if appropriate
+          if (issue.expectedTranslation && issue.actualTranslation) {
+            const fixBtn = document.createElement('button');
+            fixBtn.className = 'small-btn apply-suggestion';
+            fixBtn.textContent = 'Apply Correct Term';
+            fixBtn.addEventListener('click', () => {
+              if (window.quill) {
+                const currentText = window.quill.getText();
+                const newText = currentText.replace(
+                  new RegExp(issue.actualTranslation, 'g'), 
+                  issue.expectedTranslation
+                );
+                window.quill.setText(newText);
+                
+                // Save the change to the project
+                const currentProject = window.ProjectService.getCurrentProject();
+                if (currentProject) {
+                  window.ProjectService.updateProjectOutput(
+                    currentProject.id,
+                    window.quill.getContents().ops
+                  );
+                }
+                
+                // Update button state
+                fixBtn.disabled = true;
+                fixBtn.textContent = 'Applied';
+                
+                if (window.UIUtils) {
+                  window.UIUtils.showNotification('Glossary term corrected', 'success');
+                }
+              }
+            });
+            issueContent.appendChild(fixBtn);
+          }
+          
+          issueItem.appendChild(issueContent);
+          glossaryIssuesList.appendChild(issueItem);
         });
       }
     }
@@ -1754,22 +1978,11 @@ getAvailableModels: function(forceRefresh = false) {
     
     // Show summary notification
     if (window.UIUtils) {
-      const message = `Translation quality: ${qualityLevel} (${Math.round(averageScore)}%)\n` +
-                      `Accuracy: ${Math.round(accuracy)}%, Completeness: ${Math.round(completeness)}%`;
+      const message = `Translation quality: ${qualityLevel} (${Math.round(overallScore)}%)\n` +
+                      `Accuracy: ${Math.round(accuracy)}%, Completeness: ${Math.round(completeness)}%, ` +
+                      `Glossary: ${Math.round(glossaryCompliance)}%`;
       window.UIUtils.showNotification(message, qualityClass.toLowerCase(), 6000);
     }
-  },
-  
-  /**
-   * Get CSS class based on score
-   * @param {number} score - Score from 0-100
-   * @returns {string} CSS class name
-   */
-  getScoreClass: function(score) {
-    if (score >= 90) return 'score success';
-    if (score >= 75) return 'score info';
-    if (score >= 60) return 'score warning';
-    return 'score error';
   },
   
   /**
@@ -1803,11 +2016,20 @@ getAvailableModels: function(forceRefresh = false) {
               <div class="score-label">Completeness</div>
               <div id="completeness-score" class="score">--</div>
             </div>
+            <div class="score-item">
+              <div class="score-label">Glossary Compliance</div>
+              <div id="glossary-score" class="score">--</div>
+            </div>
           </div>
           
           <h4>Issues Found</h4>
           <ul id="verification-issues-list" class="issues-list">
             <li>Loading issues...</li>
+          </ul>
+          
+          <h4>Glossary Compliance Issues</h4>
+          <ul id="glossary-issues-list" class="glossary-issues-list">
+            <li>Loading glossary issues...</li>
           </ul>
           
           <h4>Missing Content</h4>
@@ -1822,6 +2044,21 @@ getAvailableModels: function(forceRefresh = false) {
         </div>
       </div>
     `;
+    
+    // Add CSS styles for glossary issues
+    const style = document.createElement('style');
+    style.textContent = `
+      .glossary-issue {
+        border-left-color: var(--accent-color);
+      }
+      
+      .glossary-issues-list .no-issues {
+        color: var(--success);
+        padding: var(--spacing-md);
+        text-align: center;
+      }
+    `;
+    document.head.appendChild(style);
     
     // Add event listeners
     modal.addEventListener('click', function(event) {
@@ -1850,77 +2087,15 @@ getAvailableModels: function(forceRefresh = false) {
   },
   
   /**
-   * Verify translation quality
-   * @param {string} sourceText - Original Chinese text
-   * @param {string} translatedText - English translation
-   * @param {string} model - Model ID to use for verification
-   * @returns {Promise<Object>} Verification results
+   * Get CSS class based on score
+   * @param {number} score - Score from 0-100
+   * @returns {string} CSS class name
    */
-  verifyTranslation: function(sourceText, translatedText, model) {
-    if (!sourceText || !translatedText) {
-      return Promise.reject(new Error('Source and translated text are required'));
-    }
-    
-    if (!model) {
-      return Promise.reject(new Error('Model ID is required'));
-    }
-    
-    // Get current project to get glossary entries
-    const currentProject = window.ProjectService?.getCurrentProject();
-    
-    // Generate the verification prompt
-    let prompt = '';
-    if (window.TextUtils && typeof window.TextUtils.generateVerificationPrompt === 'function') {
-      // First get glossary entries if we have a current project
-      if (currentProject) {
-        return window.GlossaryService.getGlossaryEntries(currentProject.id)
-          .then(glossaryEntries => {
-            prompt = window.TextUtils.generateVerificationPrompt(sourceText, translatedText, glossaryEntries);
-            
-            // Update progress
-            if (window.UIUtils) {
-              window.UIUtils.updateProgress(30, 'Analyzing translation...');
-            }
-            
-            // Request verification from OpenRouter
-            return this.generateCompletion(
-              model,
-              prompt,
-              0.2,  // Very low temperature for consistent JSON
-              2000, // Enough tokens for detailed verification
-              false // Don't stream
-            );
-          })
-          .then(response => {
-            // Process the response
-            return this._processVerificationResponse(response);
-          });
-      } else {
-        // No project, just use empty glossary
-        prompt = window.TextUtils.generateVerificationPrompt(sourceText, translatedText, []);
-      }
-    } else {
-      // Use a simple fallback prompt
-      prompt = this._generateFallbackVerificationPrompt(sourceText, translatedText);
-    }
-    
-    // Update progress
-    if (window.UIUtils) {
-      window.UIUtils.updateProgress(30, 'Analyzing translation...');
-    }
-    
-    // Request verification from OpenRouter
-    return this.generateCompletion(
-      model,
-      prompt,
-      0.2,  // Very low temperature for consistent JSON
-      2000, // Enough tokens for detailed verification
-      false // Don't stream
-    )
-    .then(response => {
-      // Process the response
-      return this._processVerificationResponse(response);
-    });
+  getScoreClass: function(score) {
+    if (score >= 90) return 'score success';
+    if (score >= 75) return 'score info';
+    if (score >= 60) return 'score warning';
+    return 'score error';
   },
   
   /**
@@ -1937,42 +2112,108 @@ getAvailableModels: function(forceRefresh = false) {
     
     // Extract JSON from response
     let jsonStr = response;
-    const jsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1];
-    }
-    
-    // Parse the JSON
     let results;
+    
     try {
-      results = JSON.parse(jsonStr);
-    } catch (error) {
-      console.error('Failed to parse verification response:', response);
-      
-      // Try a more permissive extraction
-      try {
-        const match = response.match(/\{[\s\S]*?\}/);
+      // First try: Look for JSON in code blocks
+      const jsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[1];
+        results = JSON.parse(jsonStr);
+      } else {
+        // Second try: Find any JSON object in the response
+        const match = response.match(/(\{[\s\S]*?\})/g);
         if (match) {
-          results = JSON.parse(match[0]);
-        } else {
-          throw new Error('Invalid JSON response');
+          // Try each match until we find valid JSON
+          for (const potentialJson of match) {
+            try {
+              results = JSON.parse(potentialJson);
+              // If it has the fields we need, use this one
+              if (results.accuracy !== undefined || results.completeness !== undefined) {
+                break;
+              }
+            } catch (e) {
+              // Continue to next match
+            }
+          }
         }
+        
+        // Third try: If still not found, try the full response
+        if (!results) {
+          results = JSON.parse(response);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to parse verification response, attempting fallback extraction:', response);
+      
+      // Final fallback: If we can't parse JSON properly, extract scores from text
+      try {
+        // Look for percentage patterns like "Accuracy: 95%" or "accuracy: 95"
+        const accuracyMatch = response.match(/accuracy:?\s*(\d+)%?/i);
+        const completenessMatch = response.match(/complete(?:ness)?:?\s*(\d+)%?/i);
+        const glossaryMatch = response.match(/glossary(?:\s*compliance)?:?\s*(\d+)%?/i);
+        
+        results = {
+          accuracy: accuracyMatch ? parseInt(accuracyMatch[1], 10) : 0,
+          completeness: completenessMatch ? parseInt(completenessMatch[1], 10) : 0,
+          glossaryCompliance: glossaryMatch ? parseInt(glossaryMatch[1], 10) : 0,
+        };
+        
+        // Try to extract issues from text
+        const issues = [];
+        const issueMatches = response.match(/issue:?\s*([^\n]+)/gi);
+        if (issueMatches) {
+          issueMatches.forEach((match, index) => {
+            issues.push({
+              issue: match.replace(/^issue:?\s*/i, ''),
+              sourceText: `Issue ${index + 1}`,
+              translatedText: '',
+              suggestion: ''
+            });
+          });
+        }
+        
+        results.issues = issues;
+        
+        // Try to extract missing content
+        const missingContent = [];
+        const missingMatches = response.match(/missing:?\s*([^\n]+)/gi);
+        if (missingMatches) {
+          missingMatches.forEach(match => {
+            missingContent.push(match.replace(/^missing:?\s*/i, ''));
+          });
+        }
+        
+        results.missingContent = missingContent;
       } catch (e) {
-        throw new Error('Invalid JSON response from verification service');
+        console.error('All parsing attempts failed:', e);
+        throw new Error('Could not parse verification results');
       }
     }
     
-    // Validate and normalize the response structure
-    if (!results.completeness && !results.accuracy) {
+    if (!results) {
       throw new Error('Invalid verification response format');
     }
     
-    // Ensure all required fields exist
+    // Validate scores to make sure they're numbers in the correct range
+    const validateScore = (score) => {
+      if (typeof score === 'number') {
+        return Math.max(0, Math.min(100, score));
+      } else if (typeof score === 'string' && !isNaN(score)) {
+        return Math.max(0, Math.min(100, parseFloat(score)));
+      }
+      return 0;
+    };
+    
+    // Ensure all required fields exist with proper formatting
     const normalizedResults = {
-      completeness: results.completeness || 0,
-      accuracy: results.accuracy || 0,
-      issues: results.issues || [],
-      missingContent: results.missingContent || []
+      completeness: validateScore(results.completeness || 0),
+      accuracy: validateScore(results.accuracy || 0),
+      glossaryCompliance: validateScore(results.glossaryCompliance || 0),
+      issues: Array.isArray(results.issues) ? results.issues : [],
+      missingContent: Array.isArray(results.missingContent) ? results.missingContent : [],
+      glossaryIssues: Array.isArray(results.glossaryIssues) ? results.glossaryIssues : [],
+      translatedText: results.translatedText || ''
     };
     
     // Update progress
@@ -1984,50 +2225,133 @@ getAvailableModels: function(forceRefresh = false) {
   },
   
   /**
-   * Generate a fallback verification prompt if TextUtils is not available
-   * @param {string} sourceText - Original Chinese text
-   * @param {string} translatedText - English translation
+   * Generate a glossary verification prompt
+   * @param {string} sourceText - Original text
+   * @param {string} translatedText - Translated text
+   * @param {Array} glossaryEntries - Glossary entries to check
    * @returns {string} Verification prompt
    * @private
    */
-  _generateFallbackVerificationPrompt: function(sourceText, translatedText) {
-    // Truncate texts if they're too long
-    const MAX_LENGTH = 2000;
-    let truncatedSourceText = sourceText;
-    let truncatedTranslatedText = translatedText;
+  _generateGlossaryVerificationPrompt: function(sourceText, translatedText, glossaryEntries) {
+    const glossarySection = glossaryEntries.length > 0 ? 
+      'Glossary Terms to Check:\n' + glossaryEntries.map(entry => 
+        `${entry.chineseTerm} → ${entry.translation} (${entry.category})`
+      ).join('\n') : 
+      'No glossary terms provided.';
     
-    if (sourceText.length > MAX_LENGTH) {
-      truncatedSourceText = sourceText.substring(0, MAX_LENGTH) + '...';
-    }
-    
-    if (translatedText.length > MAX_LENGTH) {
-      truncatedTranslatedText = translatedText.substring(0, MAX_LENGTH) + '...';
-    }
-    
-    return `Analyze this Chinese to English translation for quality and completeness.
-Please verify the translation and check for:
+    // Create a focused prompt for glossary verification
+    return `I need you to verify this Chinese to English translation for quality, completeness, and glossary compliance.
 
-1. Completeness: Ensure all content from the source is present in the translation.
-2. Accuracy: Check if the meaning is conveyed correctly.
-
-Respond in JSON format with the following structure:
-{
-  "completeness": 0-100 (percentage of content translated),
-  "accuracy": 0-100 (estimated accuracy),
-  "missingContent": ["List of sections/sentences missing"],
-  "issues": [{
-    "sourceText": "Original text",
-    "translatedText": "Problematic translation",
-    "issue": "Description of the issue",
-    "suggestion": "Suggested correction"
-  }]
-}
-
-Chinese Text:
-${truncatedSourceText}
+Source Chinese Text:
+${sourceText}
 
 English Translation:
-${truncatedTranslatedText}`;
+${translatedText}
+
+${glossarySection}
+
+Please check the following and respond in JSON format:
+1. Whether the translation is complete (% of content translated)
+2. The accuracy of the translation (% score)
+3. Whether all glossary terms are translated correctly and consistently
+4. Any missing content
+5. Specific issues with translation quality
+
+Format your response as a JSON object with these fields:
+{
+  "completeness": 0-100,
+  "accuracy": 0-100,
+  "glossaryCompliance": 0-100,
+  "missingContent": ["list of missing elements"],
+  "issues": [
+    {
+      "sourceText": "problem source text",
+      "translatedText": "problem translation",
+      "issue": "description of the issue",
+      "suggestion": "suggested correction"
+    }
+  ],
+  "glossaryIssues": [
+    {
+      "term": "glossary term",
+      "expectedTranslation": "according to glossary",
+      "actualTranslation": "in the text",
+      "locations": ["context where found"]
+    }
+  ]
+}`;
+  },
+
+  /**
+   * Enhance verification results with glossary information
+   * @param {Object} results - Verification results
+   * @param {string} projectId - Project ID for glossary lookup
+   * @returns {Promise<Object>} Enhanced results with glossary info
+   * @private
+   */
+  _enhanceResultsWithGlossaryInfo: function(results, projectId) {
+    // If results already have glossary issues with actual content, just return them
+    if (results.glossaryIssues && results.glossaryIssues.length > 0) {
+      return Promise.resolve(results);
+    }
+    
+    // Otherwise, we need to check the glossary compliance ourselves
+    return window.GlossaryService.getGlossaryEntries(projectId)
+      .then(glossaryEntries => {
+        // Initialize glossary issues array
+        results.glossaryIssues = [];
+        
+        // Skip glossary analysis if there are no glossary entries
+        if (glossaryEntries.length === 0) {
+          console.log('No glossary entries found, skipping glossary compliance check');
+          // Don't penalize for no glossary
+          results.glossaryCompliance = 100;
+          return results;
+        }
+        
+        // Add glossary compliance score if not present
+        if (!results.glossaryCompliance) {
+          // Default to high if no issues were found
+          results.glossaryCompliance = 100;
+        }
+        
+        let complianceIssuesFound = 0;
+        
+        // Loop through each glossary entry and check it against the translated text
+        if (glossaryEntries.length > 0) {
+          glossaryEntries.forEach(entry => {
+            if (!entry.chineseTerm || !entry.translation) return;
+            
+            const expectedTranslation = entry.translation;
+            const translatedText = results.translatedText || '';
+            
+            // More sophisticated check - look for term and approximate matches
+            if (!translatedText.includes(expectedTranslation)) {
+              // Check for minor variations (e.g., plurals, case differences)
+              const regex = new RegExp(`\\b${expectedTranslation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[s]?\\b`, 'i');
+              if (!regex.test(translatedText)) {
+                results.glossaryIssues.push({
+                  term: entry.chineseTerm,
+                  expectedTranslation: expectedTranslation,
+                  actualTranslation: "Term not found or translated differently",
+                  locations: []
+                });
+                
+                complianceIssuesFound++;
+              }
+            }
+          });
+        }
+        
+        // Update glossary compliance score based on issues found
+        if (complianceIssuesFound > 0) {
+          // Calculate compliance percentage based on number of issues vs total entries
+          const compliancePercentage = Math.max(0, 100 - (complianceIssuesFound * 100 / glossaryEntries.length));
+          results.glossaryCompliance = Math.round(compliancePercentage);
+        }
+        
+        return results;
+      });
   },
   
   /**
