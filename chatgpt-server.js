@@ -8,9 +8,8 @@ const cors = require('cors');
 puppeteer.use(StealthPlugin());
 
 const app = express();
-app.use(express.json({ limit: '50mb' })); // Increase the request limit to 50MB
-app.use(express.urlencoded({ limit: '50mb', extended: true })); // For URL-encoded requests
-// Use origin: true to allow the request from your specific origin
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cors({ origin: 'http://127.0.0.1:8080' }));
 
 const COOKIES_PATH = path.join(__dirname, 'chatgpt_cookies.json');
@@ -21,13 +20,12 @@ let browser = null;
 let isBrowserInitialized = false;
 
 const PORT = process.env.PORT || 3003;
-// Make sure you either set CHROME_PATH as an environment variable or have a fallback
-const CHROME_PATH = process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"; // Or your system's Chrome path
+const CHROME_PATH = process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
 function logToFile(message) {
   try {
     const stats = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE) : { size: 0 };
-    if (stats.size > 10 * 1024 * 1024) { // 10MB limit
+    if (stats.size > 10 * 1024 * 1024) {
       fs.renameSync(LOG_FILE, `${LOG_FILE}.${Date.now()}`);
     }
     fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} - ${message}\n`);
@@ -48,7 +46,6 @@ function generateUniqueId(prefix = 'id') {
 async function createPage(browser) {
   const page = await browser.newPage();
   page.on('console', msg => log(`PAGE LOG: ${msg.text()}`));
-    // Added error handling for page navigation failures
   page.on('error', err => {
         log(`Page error: ${err}`);
   });
@@ -63,7 +60,6 @@ async function createPage(browser) {
 }
 
 async function initializeBrowser(headless = false) {
-   // Use the 'new' headless mode if available, otherwise fallback to the old mode
   const headlessOption = headless === true
     ? parseInt(puppeteer.version?.split('.')[0]) >= 19
       ? { headless: 'new' }
@@ -74,12 +70,12 @@ async function initializeBrowser(headless = false) {
     try {
       log('Launching browser...');
       browser = await puppeteer.launch({
-        ...headlessOption, // Use object spread to merge options
+        ...headlessOption,
         executablePath: CHROME_PATH,
         args: [
           "--disable-blink-features=AutomationControlled",
-          "--disable-dev-shm-usage", // Add this to fix issues in Docker/containers
-          "--no-sandbox",          // Add this if running as root (e.g., in Docker)
+          "--disable-dev-shm-usage",
+          "--no-sandbox",
           "--disable-setuid-sandbox"
         ]
       });
@@ -123,13 +119,13 @@ async function withBrowserRestart(operation, requestId, maxRetries = 2) {
       return await operation();
     } catch (error) {
       log(`Operation failed for request ${requestId}, attempt ${attempt + 1}/${maxRetries + 1}: ${error.message}`);
-      if (attempt < maxRetries && (!browser || (browser.process && browser.process().killed))) {  // Check for process existence and killed status
+      if (attempt < maxRetries && (!browser || (browser.process && browser.process().killed))) {
         log('Browser appears disconnected, restarting...');
-        browser = null; // Reset the browser instance
+        browser = null;
         isBrowserInitialized = false;
-        await initializeBrowser(false); // Initialize a new browser instance
+        await initializeBrowser(false);
       } else {
-        throw error; // If max retries reached or browser is still connected, throw the error
+        throw error;
       }
     }
   }
@@ -209,7 +205,7 @@ async function fetchProjectInstructions(page, projectHref, requestId) {
     log(`Fetching instructions for project ${projectHref} for request ${requestId}`);
     await page.goto(`https://chatgpt.com${projectHref}`, { waitUntil: 'networkidle2', timeout: 60000 });
     await page.waitForSelector('button.group\\/snorlax-control-tile', { timeout: 30000 });
-    
+
     const buttons = await page.$$('button.group\\/snorlax-control-tile');
     for (const button of buttons) {
       const text = await button.$eval('.text-sm.font-medium', el => el.innerText, { timeout: 5000 }).catch(() => '');
@@ -218,13 +214,13 @@ async function fetchProjectInstructions(page, projectHref, requestId) {
         break;
       }
     }
-    
+
     await page.waitForSelector('div[role="dialog"] textarea', { timeout: 30000 });
     const instructions = await page.evaluate(() => {
       const textarea = document.querySelector('div[role="dialog"] textarea');
       return textarea ? textarea.value.trim() : "";
     });
-    log(`Instructions fetched for ${projectHref}: ${instructions.substring(0,100)}...`); // Log first 100 chars
+    log(`Instructions fetched for ${projectHref}: ${instructions.substring(0,100)}...`);
     return instructions;
   } catch (error) {
     log(`Error fetching instructions for ${projectHref}: ${error.message}`);
@@ -235,7 +231,6 @@ async function fetchProjectInstructions(page, projectHref, requestId) {
 async function scanProjects(page, requestId) {
   try {
     log(`Scanning ChatGPT projects for request ${requestId}`);
-    // Fallback selector for newer UI versions
     await page.waitForSelector('h2#snorlax-heading', { timeout: 30000 }).catch(() => {
       log('No projects heading found, might be using a different UI layout');
     });
@@ -243,7 +238,6 @@ async function scanProjects(page, requestId) {
     const projects = await page.evaluate(() => {
       const projectList = document.querySelector('ul[aria-labelledby="snorlax-heading"]');
       if (!projectList) {
-        // Fallback for newer UI versions
         const allLinks = Array.from(document.querySelectorAll('a[href]'));
         const projectLinks = allLinks.filter(link =>
           link.href.includes('/project') &&
@@ -284,13 +278,9 @@ app.post('/update-instructions', async (req, res) => {
     log(`Updating instructions for project ${projectHref} to "${newInstructions.substring(0, 50)}..." for request ${requestId}`);
     const b = await initializeBrowser(false);
     page = await createPage(b);
-     // Removed unnecessary goto, as ensureLoggedIn handles navigation
     await ensureLoggedIn(page, requestId);
 
-
-    // Navigate to the project page *after* ensuring login
     await page.goto(`https://chatgpt.com${projectHref}`, { waitUntil: 'networkidle2', timeout: 60000 });
-
 
     await page.waitForSelector('button.group\\/snorlax-control-tile', { timeout: 30000 });
     const buttons = await page.$$('button.group\\/snorlax-control-tile');
@@ -301,7 +291,7 @@ app.post('/update-instructions', async (req, res) => {
         break;
       }
     }
-    
+
     await page.waitForSelector('div[role="dialog"] textarea', { timeout: 30000 });
     await page.evaluate((instr) => {
       const ta = document.querySelector('div[role="dialog"] textarea');
@@ -311,27 +301,27 @@ app.post('/update-instructions', async (req, res) => {
         ta.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }, newInstructions);
-    
+
     log('Textarea updated, waiting 3 seconds before further actions...');
     await new Promise(resolve => setTimeout(resolve, 3000));
-    
+
     await page.focus('div[role="dialog"] textarea');
     await page.keyboard.press('Enter');
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
+
     await page.screenshot({ path: 'before_save.png' });
-    
+
     const saveButton = await page.waitForSelector('div[role="dialog"] button.btn-primary', { timeout: 30000 });
     await page.waitForFunction((btn) => {
       return btn && !btn.disabled && btn.offsetParent !== null;
     }, {}, saveButton);
-    
+
     await saveButton.click({ delay: 500 });
     log('Save button clicked');
-    
+
     await new Promise(resolve => setTimeout(resolve, 2000));
     await page.screenshot({ path: 'after_save.png' });
-    
+
     await page.close();
     log(`Instructions updated successfully for ${projectHref}`);
     res.json({ success: true, message: 'Project instructions updated successfully.' });
@@ -342,12 +332,6 @@ app.post('/update-instructions', async (req, res) => {
   }
 });
 
-/**
- * Fetches a single chapter from a given URL, using cache if available.
- * @param {string} url - The URL to fetch the chapter from.
- * @param {string} requestId - Unique request identifier.
- * @returns {Promise<Object>} - Chapter data or error response.
- */
 async function fetchChapter(url, requestId) {
   if (CHAPTER_CACHE.has(url)) {
     log(`Fetching cached chapter for ${url}`);
@@ -360,7 +344,7 @@ async function fetchChapter(url, requestId) {
     page = await createPage(b);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     log(`Page loaded for chapter URL ${url}`);
-    
+
     const is69Yuedu = url.includes('69yuedu.net');
     const chapterData = await page.evaluate((is69Yuedu) => {
       if (is69Yuedu) {
@@ -395,11 +379,11 @@ async function fetchChapter(url, requestId) {
         return { chapterName, rawText, prevLink, nextLink };
       }
     }, is69Yuedu);
-    
+
     if (!chapterData.rawText) {
       throw new Error('No chapter text found on the page');
     }
-    
+
     log(`Chapter fetched: ${chapterData.chapterName}, ${chapterData.rawText.substring(0, 100)}...`);
     await page.close();
     const result = { success: true, ...chapterData };
@@ -412,13 +396,6 @@ async function fetchChapter(url, requestId) {
   }
 }
 
-/**
- * Fetches multiple chapters starting from a given URL.
- * @param {string} url - Starting chapter URL.
- * @param {number} count - Number of chapters to fetch.
- * @param {string} requestId - Unique request identifier.
- * @returns {Promise<Object>} - Combined chapter data or error response.
- */
 async function fetchMultipleChapters(url, count, requestId) {
   try {
     log(`Fetching ${count} chapters starting from ${url} for request ${requestId}`);
@@ -442,7 +419,7 @@ async function fetchMultipleChapters(url, count, requestId) {
         break;
       }
       currentUrl = chapter.nextLink;
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1-second delay to avoid rate limits
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     const result = {
@@ -463,13 +440,13 @@ async function fetchMultipleChapters(url, count, requestId) {
 app.post('/fetch-chapter', async (req, res) => {
   const { url, count = 1 } = req.body;
   const requestId = generateUniqueId('fetch');
-  
+
   if (!url || !url.trim()) {
     return res.status(400).json({ success: false, message: 'No URL provided.' });
   }
-  
+
   try {
-    const result = count > 1 
+    const result = count > 1
       ? await fetchMultipleChapters(url, parseInt(count), requestId)
       : await fetchChapter(url, requestId);
     if (!result || typeof result !== 'object') {
@@ -488,17 +465,12 @@ app.get('/clear-cache', async (req, res) => {
   res.json({ success: true, message: 'Chapter cache cleared successfully.' });
 });
 
-/**
- * Splits text into chunks based on chapter titles, including titles in chunks.
- * @param {string} responseText - The text to chunk.
- * @returns {string[]} - Array of content chunks including titles.
- */
 function parseChunks(responseText) {
   log('Parsing input text for chunking based on chapter titles...');
   const chapterTitleRegex = /第\d+章\s.+/g;
   const matches = [...responseText.matchAll(chapterTitleRegex)];
   let chunks = [];
-  
+
   if (matches.length === 0) {
     chunks.push(responseText.trim());
   } else {
@@ -508,7 +480,7 @@ function parseChunks(responseText) {
       if (firstChunk) chunks.push(firstChunk);
     }
     for (let i = 0; i < matches.length; i++) {
-      let start = matches[i].index; // Start at the title
+      let start = matches[i].index;
       let end = (i + 1 < matches.length) ? matches[i + 1].index : responseText.length;
       let chunk = responseText.substring(start, end).trim();
       if (chunk) {
@@ -527,16 +499,6 @@ function parseChunks(responseText) {
   return chunks;
 }
 
-/**
- * Translates a text chunk using ChatGPT with retry logic.
- * @param {string} chunk - The text chunk to translate.
- * @param {string} requestId - Unique request identifier.
- * @param {Page} page - The Puppeteer page instance.
- * @param {string} chatGPTUrl - The ChatGPT URL to use.
- * @param {string} [promptPrefix='Follow the instructions carefully...'] - Custom prompt prefix.
- * @param {number} [retries=3] - Number of retry attempts.
- * @returns {Promise<string>} - The translated text.
- */
 async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix = 'Follow the instructions carefully and first check the memory for the glossary. Ensure that all terms are correctly used and consistent. Maintain full sentences and paragraphs—do not cut them off mid-sentence or with dashes:', retries = 3) {
     if (!page || page.isClosed()) {
         throw new Error('Browser page closed unexpectedly');
@@ -550,10 +512,9 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
             const prompt = `${promptPrefix} ${chunk}`;
             log(`Translating chunk for request ${requestId}: ${prompt.substring(0, 50)}...`);
 
-            await page.bringToFront(); // Make the page visible
+            await page.bringToFront();
             await page.waitForSelector('#prompt-textarea', { visible: true, timeout: 60000 });
 
-            // Use the clipboard API to paste
             await page.evaluate(async (text) => {
               await navigator.clipboard.writeText(text);
             }, prompt);
@@ -562,10 +523,9 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
             await page.keyboard.down('Control');
             await page.keyboard.press('KeyV');
             await page.keyboard.up('Control');
-            
-            // Wait for send button to be visible/enabled.  This is a *much* better approach.
+
             let sendButtonVisible = false;
-            for (let attempt = 0; attempt < 25; attempt++) { // Increased attempts for reliability
+            for (let attempt = 0; attempt < 25; attempt++) {
               try{
                 await page.waitForFunction(() => {
                     const btn = document.querySelector('[data-testid="send-button"]');
@@ -578,7 +538,7 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
                 break;
               } catch(e) {
                 log(`Attempt ${attempt+1}/25 waiting for send button failed: ${e.message}`);
-                await new Promise(r => setTimeout(r, 2000)); // Shorter delay between checks
+                await new Promise(r => setTimeout(r, 2000));
               }
             }
 
@@ -586,29 +546,24 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
                 throw new Error('Send button not visible after multiple attempts');
             }
 
-
-            // Click the send button.  Delay is important to avoid race conditions.
-            await page.click('[data-testid="send-button"]', { delay: 500 }); // Keep delay
+            await page.click('[data-testid="send-button"]', { delay: 500 });
             log(`Send button clicked for request ${requestId}`);
 
-            // Wait for the response to complete (stop button disappears)
             await page.waitForFunction(() => {
                 const stopBtn = document.querySelector('[data-testid="stop-button"]');
                 const responseContainer = document.querySelector('article[data-testid^="conversation-turn-"]');
                 return (!stopBtn || window.getComputedStyle(stopBtn).display === 'none') && responseContainer;
-            }, { timeout: 600000 }); // 10-minute timeout
+            }, { timeout: 600000 });
 
             log(`Translation completion detected for request ${requestId}`);
 
-            // Scroll the last turn into view.  This helps prevent issues with the response not fully loading.
             await page.evaluate(() => {
                 const lastTurn = document.querySelector('article[data-testid^="conversation-turn-"]:last-of-type');
                 if (lastTurn) lastTurn.scrollIntoView();
             });
-            await new Promise(resolve => setTimeout(resolve, 1000));  // Wait after scrolling
+            await new Promise(resolve => setTimeout(resolve, 1000));
 
 
-            // Extract the translation from the last assistant message.
             const translation = await page.evaluate(() => {
                 const lastTurn = document.querySelector('article[data-testid^="conversation-turn-"]:last-of-type');
                 if (!lastTurn) return "";
@@ -624,20 +579,18 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
             const duration = (Date.now() - startTime) / 1000;
             log(`Translation retrieved for request ${requestId}: ${translation.substring(0, 50)}... (took ${duration}s)`);
 
-            // Clear the textarea for the next input.  Use a more reliable method.
             await page.evaluate(() => {
                 const editor = document.querySelector('#prompt-textarea');
                 if (editor) {
-                    if('value' in editor){ // For textarea and input
+                    if('value' in editor){
                         editor.value = '';
-                    } else {  // For contenteditable
+                    } else {
                         editor.innerHTML = '';
                     }
                     editor.dispatchEvent(new Event('input', { bubbles: true }));
                 }
             });
-            
-            // Add a delay after clearing
+
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             return translation;
@@ -645,7 +598,7 @@ async function translateChunk(chunk, requestId, page, chatGPTUrl, promptPrefix =
         } catch (error) {
             log(`Translation attempt ${attempt} failed for request ${requestId}: ${error.message}`);
             if (attempt === retries) throw error;
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 5000));
         }
     }
 }
@@ -655,7 +608,7 @@ app.post('/chunk-and-translate', async (req, res) => {
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'No text provided for translation.' });
   }
-  
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -670,8 +623,7 @@ app.post('/chunk-and-translate', async (req, res) => {
     let page = await withBrowserRestart(async () => {
       const b = await initializeBrowser(false);
       const p = await createPage(b);
-      
-      // Navigate to the specified ChatGPT URL or default to the main page
+
       const targetUrl = chatGPTUrl || 'https://chatgpt.com';
       await p.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
       await ensureLoggedIn(p, requestId);
@@ -687,56 +639,51 @@ app.post('/chunk-and-translate', async (req, res) => {
         fullTranslation += (i > 0 ? "\n\n" : "") + chunkTranslation;
         processedWords += chunks[i].split(/\s+/).length;
         const progress = Math.min((processedWords / totalWords) * 100, 100);
-        
-        // Send progress update
-        res.write(`data: ${JSON.stringify({ 
-          partial: fullTranslation, 
-          chunk: i + 1, 
-          total: chunks.length, 
-          progress 
+
+        res.write(`data: ${JSON.stringify({
+          partial: fullTranslation,
+          chunk: i + 1,
+          total: chunks.length,
+          progress
         })}\n\n`);
       } catch (error) {
         log(`Error translating chunk ${i + 1}: ${error.message}`);
-        
-        // Try to recover by reloading the page
+
         try {
           await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
           await ensureLoggedIn(page, requestId);
-          
-          // Try once more with a delay
+
           await new Promise(resolve => setTimeout(resolve, 5000));
           const retryTranslation = await translateChunk(chunks[i], requestId, page, chatGPTUrl, promptPrefix);
           fullTranslation += (i > 0 ? "\n\n" : "") + retryTranslation;
           processedWords += chunks[i].split(/\s+/).length;
           const progress = Math.min((processedWords / totalWords) * 100, 100);
-          
-          res.write(`data: ${JSON.stringify({ 
-            partial: fullTranslation, 
-            chunk: i + 1, 
-            total: chunks.length, 
-            progress 
+
+          res.write(`data: ${JSON.stringify({
+            partial: fullTranslation,
+            chunk: i + 1,
+            total: chunks.length,
+            progress
           })}\n\n`);
         } catch (retryError) {
-          // If retry also fails, send error and continue with next chunk
           log(`Retry for chunk ${i + 1} also failed: ${retryError.message}`);
-          res.write(`event: error\ndata: ${JSON.stringify({ 
+          res.write(`event: error\ndata: ${JSON.stringify({
             error: `Error translating chunk ${i + 1}: ${retryError.message}. Continuing with next chunk.`,
-            requestId 
+            requestId
           })}\n\n`);
-          
-          // Add a placeholder for the failed chunk
-          fullTranslation += (i > 0 ? "\n\n" : "") + 
-            "--- TRANSLATION ERROR FOR THIS SECTION ---\n" + 
+
+          fullTranslation += (i > 0 ? "\n\n" : "") +
+            "--- TRANSLATION ERROR FOR THIS SECTION ---\n" +
             chunks[i].substring(0, 100) + "...\n" +
             "--- END OF ERROR SECTION ---";
         }
       }
     }
-    
+
     if (page && !page.isClosed()) {
       await page.close();
     }
-    
+
     res.write(`event: end\ndata: ${JSON.stringify({ translation: fullTranslation, requestId })}\n\n`);
     res.end();
   } catch (error) {

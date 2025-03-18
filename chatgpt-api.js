@@ -345,14 +345,14 @@ window.ChatGPTService = {
    * @param {string} text - Text to translate
    * @param {boolean} isRefinement - Whether this is a refinement request
    */
-  translateText: function(text, isRefinement = false) {
+ translateText: function(text, isRefinement = false) {
     if (this.isTranslating) {
       if (window.UIUtils) {
         window.UIUtils.showNotification('Translation already in progress', 'warning');
       }
       return;
     }
-    
+
     var currentProject = window.ProjectService.getCurrentProject();
     if (!currentProject) {
       if (window.UIUtils) {
@@ -360,14 +360,14 @@ window.ChatGPTService = {
       }
       return;
     }
-    
+
     if (!text || !text.trim()) {
       if (window.UIUtils) {
         window.UIUtils.showNotification('Please enter text to translate', 'warning');
       }
       return;
     }
-    
+
     // Check if we have a ChatGPT URL
     if (!currentProject.chatGPTUrl) {
       if (window.UIUtils) {
@@ -375,44 +375,65 @@ window.ChatGPTService = {
       }
       return;
     }
-    
+
     this.isTranslating = true;
-    
+
     if (window.UIUtils) {
       window.UIUtils.toggleLoading(true, 'Preparing translation...');
       window.UIUtils.toggleProgressBar(true);
       window.UIUtils.updateProgress(0, 'Analyzing text...');
     }
-    
+
     // Get chunking settings
     var strategy = document.getElementById('chunking-strategy').value;
     var chunkSize = parseInt(document.getElementById('chunk-size').value) || 1000;
-    
-    // Apply glossary if available and not a refinement
-    var textToTranslate = text;
-    if (!isRefinement) {
-      window.GlossaryService.getGlossaryEntries(currentProject.id)
+
+    // *** CENTRALIZED GLOSSARY TOGGLE CHECK ***
+    const applyGlossaryToggle = document.getElementById('apply-glossary-toggle');
+    const shouldApplyGlossary = applyGlossaryToggle ? applyGlossaryToggle.checked : true; // Default to true
+
+    // Use a Promise to manage the asynchronous glossary loading (if needed)
+    new Promise((resolve, reject) => {
+      if (shouldApplyGlossary && !isRefinement) {
+        // Apply glossary if available and toggle is on
+        window.GlossaryService.getGlossaryEntries(currentProject.id)
         .then(glossaryEntries => {
           if (glossaryEntries.length > 0) {
-            textToTranslate = window.GlossaryService.applyGlossary(text, glossaryEntries);
+            const processedText = window.GlossaryService.applyGlossary(text, glossaryEntries);
             console.log(`Applied ${glossaryEntries.length} glossary terms`);
+            if (window.UIUtils) {
+              window.UIUtils.showNotification(`Applied ${glossaryEntries.length} glossary terms before translation`, 'info', 3000);
+            }
+            resolve(processedText); // Resolve with the processed text
+          } else {
+            console.log('No glossary terms to apply');
+            resolve(text); // Resolve with the original text
           }
-          
-          // Continue with translation
-          this.performTranslation(textToTranslate, currentProject, isRefinement);
         })
         .catch(error => {
           console.error('Error applying glossary:', error);
-          // Continue with original text
-          this.performTranslation(textToTranslate, currentProject, isRefinement);
+          // Continue with original text even if glossary loading fails
+          resolve(text);
         });
-    } else {
-      // For refinement, use text as-is
+      } else {
+        // Skip glossary application if toggle is off or if it is refinement
+        if (!isRefinement && !shouldApplyGlossary && window.UIUtils) {
+          window.UIUtils.showNotification('Glossary application skipped (toggle is off)', 'info', 3000);
+        }
+        resolve(text); // Resolve with the original text
+      }
+    })
+    .then(textToTranslate => {
+      // Continue with translation process using the resolved text (either processed or original)
       this.performTranslation(textToTranslate, currentProject, isRefinement);
-    }
+    })
+     .catch(error => {
+      //This should never happen
+      console.error('Error in translate:', error)
+  });
   },
-  
-   /**
+
+  /**
  * Perform the actual translation request
  * @param {string} text - Text to translate
  * @param {Object} project - The current project
@@ -422,55 +443,7 @@ performTranslation: function(text, project, isRefinement) {
   // Set up abort controller for cancellation
   this.abortController = new AbortController();
   var signal = this.abortController.signal;
-  
-  // Check if glossary should be applied
-  var applyGlossaryToggle = document.getElementById('apply-glossary-toggle');
-  var shouldApplyGlossary = applyGlossaryToggle ? applyGlossaryToggle.checked : true;
-  
-  // Get textToTranslate based on toggle state and refinement status
-  var textToTranslate = text;
-  
-  if (!isRefinement && shouldApplyGlossary) {
-    // Apply glossary if enabled and not a refinement
-    window.GlossaryService.getGlossaryEntries(project.id)
-      .then(glossaryEntries => {
-        if (glossaryEntries.length > 0) {
-          textToTranslate = window.GlossaryService.applyGlossary(text, glossaryEntries);
-          console.log(`Applied ${glossaryEntries.length} glossary terms`);
-          
-          if (window.UIUtils) {
-            window.UIUtils.showNotification(`Applied ${glossaryEntries.length} glossary terms before translation`, 'info', 3000);
-          }
-        } else {
-          console.log('No glossary terms to apply');
-        }
-        
-        // Continue with translation using processed text
-        this.sendTranslationRequest(textToTranslate, project, signal);
-      })
-      .catch(error => {
-        console.error('Error applying glossary:', error);
-        // Continue with original text
-        this.sendTranslationRequest(text, project, signal);
-      });
-  } else {
-    // Skip glossary application
-    if (!isRefinement && !shouldApplyGlossary && window.UIUtils) {
-      window.UIUtils.showNotification('Glossary application skipped (toggle is off)', 'info', 3000);
-    }
-    
-    // Continue with translation using original text
-    this.sendTranslationRequest(text, project, signal);
-  }
-},
 
-/**
- * Send the translation request to the server
- * @param {string} text - Text to translate
- * @param {Object} project - The current project
- * @param {AbortSignal} signal - Abort signal for fetch
- */
-sendTranslationRequest: function(text, project, signal) {
   // Create request data
   var requestData = {
     text: text,
@@ -831,7 +804,6 @@ sendTranslationRequest: function(text, project, signal) {
         return window.OpenRouterService.verifyTranslation(
           sourceText,
           translatedText,
-          glossaryEntries,
           currentProject.settings.openRouterModel
         );
       })

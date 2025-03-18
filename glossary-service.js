@@ -1582,6 +1582,25 @@ ${text}`;
         });
       });
     }
+    
+    // Set up glossary toggle event handler
+    const glossaryToggle = document.getElementById('apply-glossary-toggle');
+    if (glossaryToggle) {
+      glossaryToggle.addEventListener('change', (e) => {
+        console.log("Glossary toggle changed to:", e.target.checked);
+        localStorage.setItem('applyGlossary', e.target.checked);
+      });
+      
+      // Initialize toggle state from localStorage
+      const savedState = localStorage.getItem('applyGlossary');
+      if (savedState !== null) {
+        glossaryToggle.checked = savedState === 'true';
+      } else {
+        // If no saved state, set default and save it
+        glossaryToggle.checked = true;
+        localStorage.setItem('applyGlossary', 'true');
+      }
+    }
   },
   
   /**

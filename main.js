@@ -72,6 +72,9 @@ document.addEventListener('DOMContentLoaded', async function() {
       console.warn('ChapterFetcherService not found, skipping chapter fetcher service initialization');
     }
     
+    // Initialize translation UI elements and handlers
+    initializeTranslationUI();
+    
     // Set up keyboard shortcuts
     setupKeyboardShortcuts();
     
@@ -101,6 +104,57 @@ document.addEventListener('DOMContentLoaded', async function() {
     }
   }
 });
+
+/**
+ * Initialize translation-specific UI elements and handlers
+ */
+function initializeTranslationUI() {
+  // Setup translate button
+  const translateBtn = document.getElementById('translate-btn');
+  if (translateBtn) {
+    translateBtn.addEventListener('click', function() {
+      const translationMethod = document.getElementById('translation-method');
+      if (translationMethod) {
+        if (translationMethod.value === 'openrouter' && window.OpenRouterService) {
+          window.OpenRouterService.translateText(true);
+        } else if (translationMethod.value === 'chatgpt' && window.ChatGPTService) {
+          // Call ChatGPT translation function if available
+          if (typeof window.ChatGPTService.translateText === 'function') {
+            window.ChatGPTService.translateText(true);
+          } else {
+            window.UIUtils.showNotification('ChatGPT translation service is not fully initialized', 'error');
+          }
+        }
+      }
+    });
+  }
+  
+  // Setup refine button - currently not implemented
+  const refineBtn = document.getElementById('refine-btn');
+  if (refineBtn) {
+    refineBtn.style.display = 'none'; // Hide the button since it's not implemented
+  }
+  
+  // Initialize glossary toggle
+  const glossaryToggle = document.getElementById('apply-glossary-toggle');
+  if (glossaryToggle) {
+    // Load saved state from localStorage
+    const savedState = localStorage.getItem('applyGlossary');
+    if (savedState !== null) {
+      glossaryToggle.checked = savedState === 'true';
+    } else {
+      // Default to true and save the default
+      glossaryToggle.checked = true;
+      localStorage.setItem('applyGlossary', 'true');
+    }
+    
+    // Add change listener
+    glossaryToggle.addEventListener('change', function() {
+      console.log('Glossary toggle changed:', this.checked);
+      localStorage.setItem('applyGlossary', this.checked);
+    });
+  }
+}
 
 /**
  * Set up keyboard shortcuts
